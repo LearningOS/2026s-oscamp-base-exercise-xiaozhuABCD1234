@@ -122,9 +122,6 @@ unsafe impl GlobalAlloc for FreeListAllocator {
         let mut prev_ptr: *mut FreeBlock = null_mut();
         let mut curr_ptr: *mut FreeBlock = self.free_list_head();
 
-        let mut prev_ptr: *mut FreeBlock = null_mut();
-        let mut curr_ptr: *mut FreeBlock = self.free_list_head();
-
         while !curr_ptr.is_null() {
             let curr_size = (*curr_ptr).size;
             let curr_addr = curr_ptr as usize;
