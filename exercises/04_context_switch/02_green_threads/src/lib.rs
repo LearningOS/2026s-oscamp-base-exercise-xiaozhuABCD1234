@@ -137,7 +137,24 @@ impl Scheduler {
     ///    `sp` must be 16-byte aligned (e.g. `(stack_top - 16) & !15` to leave headroom).
     /// 3. Push a `GreenThread` with this context, state `Ready`, and `entry` stored for the wrapper to call.
     pub fn spawn(&mut self, entry: extern "C" fn()) {
-        todo!("alloc stack, init ctx with ra=thread_wrapper and aligned sp, push GreenThread(Ready, entry)")
+        let stack: Vec<u8> = vec![0u8; STACK_SIZE];
+        let stack_bottom = stack.as_ptr() as u64;
+        let stack_top = stack_bottom.wrapping_add(STACK_SIZE as u64);
+
+        let sp = ((stack_top - 16) & !15) as u64;
+
+        let ctx = TaskContext {
+            sp,
+            ra: thread_wrapper as *const () as u64,
+            ..Default::default()
+        };
+
+        self.threads.push(GreenThread {
+            ctx,
+            state: ThreadState::Ready,
+            _stack: Some(stack),
+            entry: Some(entry),
+        });
     }
 
     /// Run the scheduler until all threads (except the main one) are `Finished`.
@@ -146,12 +163,75 @@ impl Scheduler {
     /// 2. Loop: if all threads in `threads[1..]` are `Finished`, break; otherwise call `schedule_next()` (which may switch away and later return).
     /// 3. Clear `SCHEDULER` when done.
     pub fn run(&mut self) {
-        todo!("set SCHEDULER to self, loop until threads[1..] all Finished, call schedule_next, then clear SCHEDULER")
+        // todo!("set SCHEDULER to self, loop until threads[1..] all Finished, call schedule_next, then clear SCHEDULER")
+        unsafe { SCHEDULER = self as *mut Scheduler };
+
+        while self.threads[1..]
+            .iter()
+            .any(|t| t.state != ThreadState::Finished)
+        {
+            self.schedule_next();
+        }
+
+        unsafe { SCHEDULER = std::ptr::null_mut() }
     }
 
     /// Find the next ready thread (starting from `current + 1` round-robin), mark current as `Ready` (if not `Finished`), mark next as `Running`, set `CURRENT_THREAD_ENTRY` if the next thread has an entry, then switch to it.
     fn schedule_next(&mut self) {
-        todo!("round-robin find next Ready, set current Ready (if not Finished), next Running, CURRENT_THREAD_ENTRY, then switch_context")
+        let num_threads = self.threads.len();
+        if num_threads <= 1 {
+            return;
+        }
+
+        let current_idx = self.current;
+
+        // 当前线程如果不是 Finished，就降为 Ready（表示让出 CPU）
+        if self.threads[current_idx].state == ThreadState::Running {
+            self.threads[current_idx].state = ThreadState::Ready;
+        }
+
+        // 轮询找下一个 Ready 线程
+        let mut next_idx = (current_idx + 1) % num_threads;
+        while next_idx != current_idx {
+            if self.threads[next_idx].state == ThreadState::Ready {
+                break;
+            }
+            next_idx = (next_idx + 1) % num_threads;
+        }
+
+        // 如果绕了一圈回到自己，且自己不是 Ready，说明工作线程都跑完了，回主线程 0
+        if next_idx == current_idx && self.threads[current_idx].state != ThreadState::Ready {
+            next_idx = 0;
+        }
+
+        // 如果最终还是自己（主线程 yield 但没人可调度），恢复 Running 直接返回
+        if next_idx == current_idx {
+            self.threads[current_idx].state = ThreadState::Running;
+            return;
+        }
+
+        // 设置目标线程状态
+        self.threads[next_idx].state = ThreadState::Running;
+
+        // 如果是第一次调度，取出 entry 给 thread_wrapper 使用
+        if let Some(entry) = self.threads[next_idx].entry.take() {
+            unsafe { CURRENT_THREAD_ENTRY = Some(entry) };
+        } else {
+            unsafe { CURRENT_THREAD_ENTRY = None };
+        }
+
+        // 【关键】必须在 switch_context 之前更新 current，
+        // 因为一旦切换出去，下次切回来时这条代码已经执行过了
+        self.current = next_idx;
+
+        // 使用 addr_of_mut!/addr_of! 绕过 Rust 借用检查器，
+        // 同时获取两个不同元素的指针而不产生冲突的 &mut / & 引用
+        let old_ctx = unsafe { std::ptr::addr_of_mut!(self.threads[current_idx].ctx) };
+        let new_ctx = unsafe { std::ptr::addr_of!(self.threads[next_idx].ctx) };
+
+        unsafe {
+            switch_context(&mut *old_ctx, &*new_ctx);
+        }
     }
 }
 
