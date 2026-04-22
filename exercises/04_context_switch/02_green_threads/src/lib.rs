@@ -226,8 +226,8 @@ impl Scheduler {
 
         // 使用 addr_of_mut!/addr_of! 绕过 Rust 借用检查器，
         // 同时获取两个不同元素的指针而不产生冲突的 &mut / & 引用
-        let old_ctx = unsafe { std::ptr::addr_of_mut!(self.threads[current_idx].ctx) };
-        let new_ctx = unsafe { std::ptr::addr_of!(self.threads[next_idx].ctx) };
+        let old_ctx = self.threads[current_idx].ctx.as_mut_ptr();
+        let new_ctx = self.threads[next_idx].ctx.as_ptr();
 
         unsafe {
             switch_context(&mut *old_ctx, &*new_ctx);
